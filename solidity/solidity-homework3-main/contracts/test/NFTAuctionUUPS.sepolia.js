@@ -516,38 +516,81 @@ describe("NFTAuctionUUPS", function () {
         });
     });
 
-    describe.skip("完整拍卖流程", function () {
+    describe("完整拍卖流程", function () {
         it("应该完成完整的拍卖流程", async function () {
-            await nft.mint(seller.address);
-            await nft.connect(seller).approve(await auction.getAddress(), 1);
+            this.timeout(600000); // 10 分钟，Sepolia 必须给足
 
-            await auction.connect(seller).createAuction(
-                await nft.getAddress(),
-                1,
-                "100000000000000",
-                86400
+            /* ---------- 1. Mint NFT ---------- */
+            const mintTx = await nft.mint(seller.address);
+            const mintReceipt = await mintTx.wait();
+
+            const transferEvent = mintReceipt.logs.find(
+                log => log.topics[0] === ethers.id("Transfer(address,address,uint256)")
             );
+            const tokenId = BigInt(transferEvent.topics[3]);
+
+            /* ---------- 2. Approve ---------- */
+            await (await nft.connect(seller)
+                .approve(await auction.getAddress(), tokenId))
+                .wait();
+
+            /* ---------- 3. Create auction ---------- */
+            const minPriceUSD = ethers.parseEther("0.0001");
+            const duration = 240; // 4 分钟（测试网）
+
+            await (await auction.connect(seller).createAuction(
+                await nft.getAddress(),
+                tokenId,
+                minPriceUSD,
+                duration
+            )).wait();
+
             const auctionId = await auction.auctionCount();
+            const auctionInfo = await auction.auctions(auctionId);
+            const endTime = auctionInfo.endTime;
 
-            const bid1 = "1000000000000000";
-            await auction.connect(bidder1).bid(auctionId, ETH_ADDRESS, bid1, { value: bid1 });
+            console.log("Auction endTime:", endTime.toString());
 
-            const bid2 = "1500000000000000";
-            await auction.connect(bidder2).bid(auctionId, ETH_ADDRESS, bid2, { value: bid2 });
+            /* ---------- 4. Bid ---------- */
+            const bid1 = ethers.parseEther("0.0011");
+            await (await auction.connect(bidder1)
+                .bid(auctionId, ethers.ZeroAddress, bid1, { value: bid1 }))
+                .wait();
 
-            await time.increase(86401);
-            await auction.finalizeAuction(auctionId);
+            const bid2 = ethers.parseEther("0.0012");
+            await (await auction.connect(bidder2)
+                .bid(auctionId, ethers.ZeroAddress, bid2, { value: bid2 }))
+                .wait();
 
-            await auction.connect(bidder2).claimNFT(auctionId);
-            expect(await nft.ownerOf(1)).to.equal(bidder2.address);
+            /* ---------- 5. 等待拍卖结束（链上时间） ---------- */
+            console.log("Waiting auction end...");
 
-            const sellerBalanceBefore = await ethers.provider.getBalance(seller.address);
-            const tx = await auction.connect(seller).claimFunds(auctionId);
-            const receipt = await tx.wait();
-            const gasUsed = receipt.gasUsed * receipt.gasPrice;
-            const sellerBalanceAfter = await ethers.provider.getBalance(seller.address);
+            while (true) {
+                const block = await ethers.provider.getBlock("latest");
+                if (block.timestamp >= endTime) break;
+                const currentTime = block.timestamp;
+                console.log("当前时间:", currentTime, "结束时间:", endTime.toString(), "差值:", Number(endTime) - currentTime);
+                await new Promise(r => setTimeout(r, 5000));
+            }
 
-            expect(sellerBalanceAfter - sellerBalanceBefore + gasUsed).to.equal(bid2);
+            /* ---------- 6. Finalize（必须 wait） ---------- */
+            const finalizeTx = await auction.finalizeAuction(auctionId);
+            await finalizeTx.wait();
+
+            const afterFinalize = await auction.auctions(auctionId);
+            expect(afterFinalize.ended).to.equal(true);
+
+            /* ---------- 7. Winner claim NFT ---------- */
+            await (await auction.connect(bidder2)
+                .claimNFT(auctionId))
+                .wait();
+
+            expect(await nft.ownerOf(tokenId)).to.equal(bidder2.address);
+
+            /* ---------- 8. Seller claim funds ---------- */
+            await (await auction.connect(seller)
+                .claimFunds(auctionId))
+                .wait();
         });
     });
 
