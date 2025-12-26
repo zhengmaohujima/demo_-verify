@@ -1,15 +1,26 @@
 const dotenv = require("dotenv");
 const dotenvExpand = require("dotenv-expand");
 
-// 👇 关键：只加载一次，用 expand 包住
 dotenvExpand.expand(dotenv.config());
 
 require("@nomicfoundation/hardhat-toolbox");
 require("@openzeppelin/hardhat-upgrades");
 
+// 添加这个 subtask 来包含 test 目录下的 sol 文件
+const { subtask } = require("hardhat/config");
+const { TASK_COMPILE_SOLIDITY_GET_SOURCE_PATHS } = require("hardhat/builtin-tasks/task-names");
+
+subtask(TASK_COMPILE_SOLIDITY_GET_SOURCE_PATHS)
+    .setAction(async (_, __, runSuper) => {
+        const paths = await runSuper();
+        const glob = require("glob");
+        const testContracts = glob.sync("test/**/*.sol");
+        return [...paths, ...testContracts];
+    });
+
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
-    solidity:{
+    solidity: {
         compilers: [
             {
                 version: "0.8.28",
@@ -40,15 +51,17 @@ module.exports = {
             },
         ],
     },
+    paths: {
+        sources: "./contracts",
+        tests: "./test",
+        cache: "./cache",
+        artifacts: "./artifacts",
+    },
     networks: {
         hardhat: {},
         sepolia: {
             url: process.env.SEPOLIA_RPC,
             accounts: [process.env.PRIVATE_KEY],
         },
-        // mainnet: {
-        //     url: process.env.MAINNET_RPC,
-        //     accounts: [process.env.PRIVATE_KEY],
-        // },
     },
 };
